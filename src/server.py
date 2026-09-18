@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from src.webhook import router as webhook_router
 from src.send_message import router as send_router
-from src.config import settings
+from src.config import Settings as settings
 
 # Load environment variables from .env file
 load_dotenv()

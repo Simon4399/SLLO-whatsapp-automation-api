@@ -15,6 +15,7 @@ eggs/
 # Virtual environments
 venv/
 .venv/
+.venv-1/
 env/
 
 # IDE

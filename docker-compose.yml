@@ -1,8 +1,19 @@
 services:
   whatsapp-api:
-      build: .
-          ports:
-                - "8000:8000"
-                    env_file:
-                          - .env
-                              restart: unless-stopped
+    build: .
+    container_name: whatsapp-api
+    ports:
+        - "3004:3004"
+    env_file:
+        - .env
+    restart: unless-stopped
+    volumes:
+        - .:/usr/src/app/whatsapp-api
+        # Prevents the local machine's node_modules from conflicting with the container's environment
+        - /usr/src/app/whatsapp-api/node_modules
+    networks:
+      - nginx_network
+
+networks:
+    nginx_network:
+        external: true
