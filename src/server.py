@@ -22,16 +22,16 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
         """Startup and shutdown events."""
-        logger.info("WhatsApp Cloud API Starter Kit is starting up...")
+        logger.info("SLLO WhatsApp API Webhook Server is starting up...")
         logger.info(f"Graph API version: {settings.GRAPH_API_VERSION}")
         yield
-        logger.info("WhatsApp Cloud API Starter Kit is shutting down...")
+        logger.info("SLLO WhatsApp API Webhook Server is shutting down...")
 
 
 app = FastAPI(
-        title="WhatsApp Cloud API Starter Kit",
-        description="A production-ready starter template for WhatsApp Cloud API with FastAPI",
-        version="2.0.0",
+        title="SLLO WhatsApp API Webhook Server",
+        description="A WhatsApp Cloud API with FastAPI for SLLO Emergency Response System",
+        version="1.0.0",
         lifespan=lifespan,
 )
 
@@ -44,8 +44,8 @@ async def home():
         """Health check endpoint."""
         return {
             "status": "running",
-            "service": "WhatsApp Cloud API Starter Kit",
-            "version": "2.0.0",
+            "service": "SLLO WhatsApp API Webhook Server",
+            "version": "1.0.0",
         }
 
 
