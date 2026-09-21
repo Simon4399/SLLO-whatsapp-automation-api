@@ -3,6 +3,7 @@ import queue
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 
 from src.config import Settings as settings
 from src.utils.verify_signature import verify_webhook_signature
@@ -13,21 +14,20 @@ router = APIRouter()
 message_queue: queue.Queue = queue.Queue()
 
 @router.get("/webhook")
+@router.get("/webhook/")
 async def verify_webhook(
     hub_mode: Optional[str] = Query(None, alias="hub.mode"),
     hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
     hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
 ):
     """
-        Webhook verification endpoint.
-
-        Meta sends a GET request with hub.mode, hub.challenge, and hub.verify_token
-            to verify the webhook URL during setup.
+    Webhook verification endpoint.
+    Meta expects the raw challenge echoed back as plain text.
     """
     if hub_mode == "subscribe" and hub_verify_token == settings.VERIFY_TOKEN:
-        logger.info("Webhook verified successfully")
         if hub_challenge is not None:
-            return int(hub_challenge)
+            logger.info("Webhook verified successfully")
+            return PlainTextResponse(content=hub_challenge, status_code=200)
         else:
             logger.warning("Webhook verification challenge is missing")
             raise HTTPException(status_code=400, detail="Missing hub.challenge")
@@ -37,18 +37,18 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
+@router.post("/webhook/")
 async def receive_message(
     request: Request,
     x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
 ):
     """
-        Receive incoming WhatsApp messages.
-
-            Validates the request signature using HMAC SHA-256 before processing.
-                """
+    Receive incoming WhatsApp messages.
+    Validates the request signature using HMAC SHA-256 before processing.
+    """
     body = await request.body()
 
-# Verify webhook signature
+    # 1. Verify webhook signature
     if x_hub_signature_256 is None:
         logger.error("No signature header provided in webhook request")
         raise HTTPException(status_code=401, detail="Missing signature")
@@ -58,13 +58,15 @@ async def receive_message(
 
     data = await request.json()
 
-# Extract messages from the webhook payload
+    # 2. Extract and route payload
     try:
         entries = data.get("entry", [])
         for entry in entries:
             changes = entry.get("changes", [])
             for change in changes:
                 value = change.get("value", {})
+
+                # Handle incoming messages
                 messages = value.get("messages", [])
                 for message in messages:
                     sender = message.get("from", "unknown")
@@ -74,8 +76,8 @@ async def receive_message(
 
                     content_text = ""
                     if msg_type == "text":
-                        text_body = message.get("text", {}).get("body", "")
-                        logger.info(f"Text message from {sender}: {text_body}")
+                        content_text = message.get("text", {}).get("body", "")
+                        logger.info(f"Text message from {sender}: {content_text}")
                     elif msg_type == "interactive":
                         interactive = message.get("interactive", {})
                         itype = interactive.get("type")
@@ -83,17 +85,11 @@ async def receive_message(
                             content_text = interactive["button_reply"]["id"]
                         elif itype == "list_reply":
                             content_text = interactive["list_reply"]["id"]
+                        logger.info(f"Interactive selection from {sender}: {content_text}")
                     else:
-                        logger.info(f"{msg_type} message from {sender}")
+                        logger.info(f"Received unhandled message type '{msg_type}' from {sender}")
 
-                        # Handle message statuses (delivered, read, etc.)
-                        statuses = value.get("statuses", [])
-                        for status in statuses:
-                            logger.info(
-                                f"Message {status.get('id')} status: {status.get('status')}"
-                            )
-
-                    # Queue the sanitized message for backend to poll
+                    # Queue the incoming message
                     message_queue.put({
                         "message_id": msg_id,
                         "chat_id": sender,
@@ -102,26 +98,36 @@ async def receive_message(
                         "timestamp": timestamp,
                     })
 
+                # Handle status updates (sent, delivered, read) separately
+                statuses = value.get("statuses", [])
+                for status in statuses:
+                    logger.debug(
+                        f"Message {status.get('id')} status: {status.get('status')}"
+                    )
+
     except Exception as e:
         logger.error(f"Error processing webhook payload: {e}")
 
+    # Meta requires a rapid 200 OK return
     return {"status": "received"}
+
 
 # ================== 2. BACKEND API ENDPOINTS ==================
 def verify_internal_auth(authorization: Optional[str]):
-  if not authorization or authorization != f"Bearer {settings.INTERNAL_SECRET}":
-    raise HTTPException(status_code=401, detail="Unauthorized")
+    if not authorization or authorization != f"Bearer {settings.INTERNAL_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 @router.get("/messages-poll")
 def poll_messages(authorization: Optional[str] = Header(None)):
-  """Called by your backend `check_and_receive_messages()`."""
-  verify_internal_auth(authorization)
+    """Called by backend worker to pull unread messages."""
+    verify_internal_auth(authorization)
 
-  fetched = []
-  while not message_queue.empty():
-    try:
-      fetched.append(message_queue.get_nowait())
-    except queue.Empty:
-      break
+    fetched = []
+    while not message_queue.empty():
+        try:
+            fetched.append(message_queue.get_nowait())
+        except queue.Empty:
+            break
 
-  return {"messages": fetched}
+    return {"messages": fetched}
