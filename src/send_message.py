@@ -1,7 +1,8 @@
 import logging
+from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 from src.config import Settings as settings
 from src.models import (
@@ -55,66 +56,85 @@ async def _send_whatsapp_message(payload: dict) -> MessageResponse:
                     return MessageResponse(success=False, error=str(e))
 
 
-@router.post("/send-message", response_model=MessageResponse)
-async def send_text_message(payload: SendTextRequest):
-    """Send a text message to a WhatsApp number."""
-    data = {
-        "messaging_product": "whatsapp",
-        "to": payload.to,
-        "type": "text",
-        "text": {"body": payload.message},
-    }
-    return await _send_whatsapp_message(data)
+# @router.post("/send-message", response_model=MessageResponse)
+# async def send_text_message(payload: SendTextRequest):
+#     """Send a text message to a WhatsApp number."""
+#     data = {
+#         "messaging_product": "whatsapp",
+#         "to": payload.to,
+#         "type": "text",
+#         "text": {"body": payload.message},
+#     }
+#     return await _send_whatsapp_message(data)
 
 
-@router.post("/send-image", response_model=MessageResponse)
-async def send_image_message(payload: SendImageRequest):
-    """Send an image message to a WhatsApp number."""
-    image_data = {"link": payload.image_url}
-    if payload.caption:
-                image_data["caption"] = payload.caption
+# @router.post("/send-image", response_model=MessageResponse)
+# async def send_image_message(payload: SendImageRequest):
+#     """Send an image message to a WhatsApp number."""
+#     image_data = {"link": payload.image_url}
+#     if payload.caption:
+#                 image_data["caption"] = payload.caption
 
-    data = {
-                "messaging_product": "whatsapp",
-                "to": payload.to,
-                "type": "image",
-                "image": image_data,
-    }
-    return await _send_whatsapp_message(data)
-
-
-@router.post("/send-document", response_model=MessageResponse)
-async def send_document_message(payload: SendDocumentRequest):
-    """Send a document message to a WhatsApp number."""
-    doc_data = {"link": payload.document_url}
-    if payload.filename:
-                doc_data["filename"] = payload.filename
-    if payload.caption:
-                doc_data["caption"] = payload.caption
-
-    data = {
-                "messaging_product": "whatsapp",
-                "to": payload.to,
-                "type": "document",
-                "document": doc_data,
-    }
-    return await _send_whatsapp_message(data)
+#     data = {
+#                 "messaging_product": "whatsapp",
+#                 "to": payload.to,
+#                 "type": "image",
+#                 "image": image_data,
+#     }
+#     return await _send_whatsapp_message(data)
 
 
-@router.post("/send-template", response_model=MessageResponse)
-async def send_template_message(payload: SendTemplateRequest):
-    """Send a template message to a WhatsApp number."""
-    template_data = {
-                "name": payload.template_name,
-                "language": {"code": payload.language_code},
-    }
-    if payload.components:
-                template_data["components"] = [c.model_dump() for c in payload.components]
+# @router.post("/send-document", response_model=MessageResponse)
+# async def send_document_message(payload: SendDocumentRequest):
+#     """Send a document message to a WhatsApp number."""
+#     doc_data = {"link": payload.document_url}
+#     if payload.filename:
+#                 doc_data["filename"] = payload.filename
+#     if payload.caption:
+#                 doc_data["caption"] = payload.caption
 
-    data = {
-                "messaging_product": "whatsapp",
-                "to": payload.to,
-                "type": "template",
-                "template": template_data,
-    }
-    return await _send_whatsapp_message(data)
+#     data = {
+#                 "messaging_product": "whatsapp",
+#                 "to": payload.to,
+#                 "type": "document",
+#                 "document": doc_data,
+#     }
+#     return await _send_whatsapp_message(data)
+
+
+# @router.post("/send-template", response_model=MessageResponse)
+# async def send_template_message(payload: SendTemplateRequest):
+#     """Send a template message to a WhatsApp number."""
+#     template_data = {
+#                 "name": payload.template_name,
+#                 "language": {"code": payload.language_code},
+#     }
+#     if payload.components:
+#                 template_data["components"] = [c.model_dump() for c in payload.components]
+
+#     data = {
+#                 "messaging_product": "whatsapp",
+#                 "to": payload.to,
+#                 "type": "template",
+#                 "template": template_data,
+#     }
+#     return await _send_whatsapp_message(data)
+
+@router.post("/send")
+@router.post("/send/")
+async def forward_to_whatsapp(
+    payload: Dict[str, Any], authorization: Optional[str] = Header(None)
+):
+  """Receives an outgoing WhatsApp JSON payload from your backend and relays it to Meta Graph API."""
+  # 1. Verify internal token between backend and webhook server
+  if (
+      not authorization
+      or authorization != f"Bearer {settings.INTERNAL_SECRET}"
+  ):
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+  # Ensure messaging_product is set
+  payload["messaging_product"] = "whatsapp"
+
+  return await _send_whatsapp_message(payload)
+  

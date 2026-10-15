@@ -53,6 +53,7 @@ async def home():
 
 
 @app.get("/health", tags=["Health"])
+@app.get("/health/", tags=["Health"])
 async def health_check():
   """Detailed health check endpoint."""
   return {
