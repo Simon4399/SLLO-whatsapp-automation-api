@@ -120,14 +120,14 @@ def verify_internal_auth(authorization: Optional[str]):
 
 @router.get("/messages-poll")
 def poll_messages(authorization: Optional[str] = Header(None)):
-    """Called by backend worker to pull unread messages."""
+    """Called by backend worker to pull the earliest unread message."""
     verify_internal_auth(authorization)
 
     fetched = []
-    while not message_queue.empty():
+    if not message_queue.empty():
         try:
             fetched.append(message_queue.get_nowait())
         except queue.Empty:
-            break
+            pass
 
     return {"messages": fetched}
