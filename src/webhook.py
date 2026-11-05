@@ -119,6 +119,7 @@ def verify_internal_auth(authorization: Optional[str]):
 
 
 @router.get("/messages-poll")
+@router.get("/messages-poll/")
 def poll_messages(authorization: Optional[str] = Header(None)):
     """Called by backend worker to pull the earliest unread message."""
     verify_internal_auth(authorization)

@@ -5,55 +5,13 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from src.config import Settings as _SettingsClass
 try:
-    from src.config import settings
-except ImportError:
-    from src.config import Settings as _SettingsClass
+    settings = _SettingsClass()
+except Exception:
+    settings = _SettingsClass  # type: ignore
 
-    try:
-        settings = _SettingsClass()
-    except Exception:
-        settings = _SettingsClass  # type: ignore
-
-try:
-    from src.models import (
-        MessageResponse,
-        SendDocumentRequest,
-        SendImageRequest,
-        SendTemplateRequest,
-        SendTextRequest,
-    )
-except ImportError:
-
-    class MessageResponse(BaseModel):  # type: ignore
-        success: bool
-        message_id: Optional[str] = None
-        error: Optional[str] = None
-
-    class SendTextRequest(BaseModel):  # type: ignore
-        to: str
-        message: str
-        preview_url: bool = False
-        reply_to_message_id: Optional[str] = None
-
-    class SendImageRequest(BaseModel):  # type: ignore
-        to: str
-        image_url: str
-        caption: Optional[str] = None
-        reply_to_message_id: Optional[str] = None
-
-    class SendDocumentRequest(BaseModel):  # type: ignore
-        to: str
-        document_url: str
-        filename: Optional[str] = None
-        caption: Optional[str] = None
-        reply_to_message_id: Optional[str] = None
-
-    class SendTemplateRequest(BaseModel):  # type: ignore
-        to: str
-        template_name: str
-        language_code: str = "en_US"
-        components: Optional[ list ] = None
+import src.models as models
 
 
 logger = logging.getLogger(__name__)
@@ -91,7 +49,7 @@ def _get_messages_endpoint_url() -> str:
     return f"{base_url}/messages"
 
 
-async def _send_whatsapp_message(payload: Dict[str, Any]) -> MessageResponse:
+async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageResponse:
     """Send a message or read-receipt payload via the WhatsApp Cloud API using httpx (async).
 
     Args:
@@ -120,12 +78,12 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> MessageResponse:
                 if payload.get("status") == "read":
                     msg_id = str(payload.get("message_id", ""))
                     logger.info(f"Marked message as read: {msg_id}")
-                    return MessageResponse(success=True, message_id=msg_id)
+                    return models.MessageResponse(success=True, message_id=msg_id)
 
                 messages_list = data.get("messages") or [{}]
                 message_id = messages_list[0].get("id", "") if messages_list else ""
                 logger.info(f"Message sent successfully: {message_id}")
-                return MessageResponse(success=True, message_id=message_id)
+                return models.MessageResponse(success=True, message_id=message_id)
 
             error_obj = data.get("error", {}) if isinstance(data, dict) else {}
             error_msg = (
@@ -134,23 +92,21 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> MessageResponse:
                 or f"HTTP {response.status_code}: {response.text[:200]}"
             )
             logger.error(f"WhatsApp API error ({response.status_code}): {error_msg}")
-            return MessageResponse(success=False, error=error_msg)
+            return models.MessageResponse(success=False, error=error_msg)
 
         except httpx.TimeoutException:
             logger.error("WhatsApp API request timed out")
-            return MessageResponse(success=False, error="Request timed out")
+            return models.MessageResponse(success=False, error="Request timed out")
         except httpx.RequestError as e:
             logger.error(f"Request error: {e}")
-            return MessageResponse(success=False, error=str(e))
+            return models.MessageResponse(success=False, error=str(e))
 
 
-@router.post("/send", response_model=MessageResponse)
-@router.post("/send/", response_model=MessageResponse)
-@router.post("/api/send", response_model=MessageResponse)
-@router.post("/api/send/", response_model=MessageResponse)
+@router.post("/send", response_model=models.MessageResponse)
+@router.post("/send/", response_model=models.MessageResponse)
 async def forward_to_whatsapp(
     payload: Dict[str, Any], authorization: Optional[str] = Header(None)
-) -> MessageResponse:
+) -> models.MessageResponse:
     """Receives an outgoing WhatsApp JSON payload from your backend and relays it to Meta Graph API.
 
     Supports all WhatsApp Cloud API message types (text, interactive buttons/lists/CTA URL/location request/
@@ -174,10 +130,10 @@ async def forward_to_whatsapp(
     return await _send_whatsapp_message(payload)
 
 
-@router.post("/send-message", response_model=MessageResponse)
+@router.post("/send-message", response_model=models.MessageResponse)
 async def send_text_message(
-    payload: SendTextRequest, authorization: Optional[str] = Header(None)
-) -> MessageResponse:
+    payload: models.SendTextRequest, authorization: Optional[str] = Header(None)
+) -> models.MessageResponse:
     """Send a text message (with optional contextual reply) to a WhatsApp number."""
     _verify_internal_auth(authorization)
     data: Dict[str, Any] = {
@@ -193,10 +149,10 @@ async def send_text_message(
     return await _send_whatsapp_message(data)
 
 
-@router.post("/send-image", response_model=MessageResponse)
+@router.post("/send-image", response_model=models.MessageResponse)
 async def send_image_message(
-    payload: SendImageRequest, authorization: Optional[str] = Header(None)
-) -> MessageResponse:
+    payload: models.SendImageRequest, authorization: Optional[str] = Header(None)
+) -> models.MessageResponse:
     """Send an image message to a WhatsApp number."""
     _verify_internal_auth(authorization)
     image_data: Dict[str, Any] = {"link": payload.image_url}
@@ -216,10 +172,10 @@ async def send_image_message(
     return await _send_whatsapp_message(data)
 
 
-@router.post("/send-document", response_model=MessageResponse)
+@router.post("/send-document", response_model=models.MessageResponse)
 async def send_document_message(
-    payload: SendDocumentRequest, authorization: Optional[str] = Header(None)
-) -> MessageResponse:
+    payload: models.SendDocumentRequest, authorization: Optional[str] = Header(None)
+) -> models.MessageResponse:
     """Send a document message to a WhatsApp number."""
     _verify_internal_auth(authorization)
     doc_data: Dict[str, Any] = {"link": payload.document_url}
@@ -241,10 +197,10 @@ async def send_document_message(
     return await _send_whatsapp_message(data)
 
 
-@router.post("/send-template", response_model=MessageResponse)
+@router.post("/send-template", response_model=models.MessageResponse)
 async def send_template_message(
-    payload: SendTemplateRequest, authorization: Optional[str] = Header(None)
-) -> MessageResponse:
+    payload: models.SendTemplateRequest, authorization: Optional[str] = Header(None)
+) -> models.MessageResponse:
     """Send a template message to a WhatsApp number (works outside the 24h customer service window)."""
     _verify_internal_auth(authorization)
     template_data: Dict[str, Any] = {

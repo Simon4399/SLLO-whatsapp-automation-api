@@ -19,6 +19,8 @@ class SendTextRequest(BaseModel):
 
      to: str = Field(..., description="Recipient phone number in international format")
      message: str = Field(..., description="Text message body")
+     preview_url: bool = Field(False, description="Whether to enable URL preview")
+     reply_to_message_id: Optional[str] = Field(None, description="ID of the message to reply to")
 
 
 class SendImageRequest(BaseModel):
@@ -27,6 +29,7 @@ class SendImageRequest(BaseModel):
       to: str = Field(..., description="Recipient phone number in international format")
       image_url: str = Field(..., alias="image_url", description="Public URL of the image")
       caption: Optional[str] = Field(None, description="Optional image caption")
+      reply_to_message_id: Optional[str] = Field(None, description="ID of the message to reply to")
 
 
 class SendDocumentRequest(BaseModel):
@@ -36,6 +39,7 @@ class SendDocumentRequest(BaseModel):
       document_url: str = Field(..., description="Public URL of the document")
       filename: Optional[str] = Field(None, description="Filename to display")
       caption: Optional[str] = Field(None, description="Optional document caption")
+      reply_to_message_id: Optional[str] = Field(None, description="ID of the message to reply to")
 
 
 class TemplateComponent(BaseModel):
