@@ -1,18 +1,18 @@
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from src.config import Settings as _SettingsClass
-try:
-    settings = _SettingsClass()
-except Exception:
-    settings = _SettingsClass  # type: ignore
+from src.config import Settings
 
 import src.models as models
 
+# Instantiate Settings() so the @property `BASE_URL` evaluates to a string
+# instead of returning a `<property object>` descriptor on the class.
+settings = Settings() if isinstance(Settings, type) else Settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +20,12 @@ router = APIRouter()
 
 
 def _verify_internal_auth(authorization: Optional[str]) -> None:
-    """Validates the internal gateway secret only when INTERNAL_SECRET is configured and non-empty.
+    """Validates `INTERNAL_SECRET` between backend and webhook server.
 
-    Avoids false 401 errors caused by HTTP servers stripping trailing whitespace from 'Bearer '
-    when INTERNAL_SECRET / GATEWAY_SECRET is empty.
+    If `INTERNAL_SECRET` is empty in `.env`, skips strict check so a stripped 'Bearer'
+    header does not trigger a false 401 Unauthorized.
     """
-    internal_secret = str(getattr(settings, "INTERNAL_SECRET", "") or "").strip()
+    internal_secret = (getattr(settings, "INTERNAL_SECRET", "") or os.getenv("INTERNAL_SECRET", "")).strip()
     if not internal_secret:
         return
 
@@ -34,18 +34,27 @@ def _verify_internal_auth(authorization: Optional[str]) -> None:
 
     scheme, _, token = authorization.strip().partition(" ")
     if scheme.lower() != "bearer" or token.strip() != internal_secret:
-        raise HTTPException(status_code=401, detail="Unauthorized: invalid gateway token")
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid INTERNAL_SECRET token")
 
 
 def _get_messages_endpoint_url() -> str:
-    """Builds the Meta Graph API `/messages` URL safely from `settings`."""
-    base_url = str(getattr(settings, "BASE_URL", "")).rstrip("/")
-    phone_number_id = str(getattr(settings, "PHONE_NUMBER_ID", "") or getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", "")).strip()
+    """Resolves the Meta Graph API `/messages` endpoint URL from the instantiated `settings`."""
+    base_url = getattr(settings, "BASE_URL", "")
+    # Guard against `Settings` being accessed as an uninstantiated class where BASE_URL is a @property
+    if isinstance(base_url, property) or not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+        version = (
+            getattr(settings, "GRAPH_API_VERSION", "")
+            or os.getenv("GRAPH_API_VERSION", "v26.0")
+        ).strip("/")
+        phone_id = (
+            getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", "")
+            or os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+        ).strip("/")
+        base_url = f"https://graph.facebook.com/{version}/{phone_id}"
 
+    base_url = base_url.rstrip("/")
     if base_url.endswith("/messages"):
         return base_url
-    if phone_number_id and phone_number_id not in base_url:
-        return f"{base_url}/{phone_number_id}/messages"
     return f"{base_url}/messages"
 
 
@@ -59,7 +68,7 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
         MessageResponse with success status and message ID.
     """
     url = _get_messages_endpoint_url()
-    token = str(getattr(settings, "WHATSAPP_TOKEN", "") or getattr(settings, "ACCESS_TOKEN", "")).strip()
+    token = (getattr(settings, "WHATSAPP_TOKEN", "") or os.getenv("WHATSAPP_TOKEN", "")).strip()
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -74,7 +83,7 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
                 data = {}
 
             if response.status_code in (200, 201):
-                # Read receipts return {"success": true} without a "messages" array
+                # Read receipts (`status: "read"`) return `{"success": true}` without a `messages` list
                 if payload.get("status") == "read":
                     msg_id = str(payload.get("message_id", ""))
                     logger.info(f"Marked message as read: {msg_id}")
@@ -98,7 +107,7 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
             logger.error("WhatsApp API request timed out")
             return models.MessageResponse(success=False, error="Request timed out")
         except httpx.RequestError as e:
-            logger.error(f"Request error: {e}")
+            logger.error(f"Request error calling {url}: {e}")
             return models.MessageResponse(success=False, error=str(e))
 
 
