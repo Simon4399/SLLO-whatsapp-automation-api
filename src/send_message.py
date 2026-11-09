@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Cache if WHATSAPP_PHONE_NUMBER_ID was accidentally set to the WABA ID and auto-resolved
+_resolved_phone_number_id: Optional[str] = None
+
 
 def _verify_internal_auth(authorization: Optional[str]) -> None:
     """Validates `INTERNAL_SECRET` between backend and webhook server.
@@ -37,25 +40,70 @@ def _verify_internal_auth(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized: invalid INTERNAL_SECRET token")
 
 
-def _get_messages_endpoint_url() -> str:
+def _get_api_version() -> str:
+    version = (
+        getattr(settings, "GRAPH_API_VERSION", "")
+        or os.getenv("GRAPH_API_VERSION", "v21.0")
+    ).strip("/")
+    return version if version.startswith("v") else f"v{version}"
+
+
+def _get_configured_phone_id() -> str:
+    if _resolved_phone_number_id:
+        return _resolved_phone_number_id
+    return (
+        getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", "")
+        or os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    ).strip("/")
+
+
+def _get_messages_endpoint_url(override_phone_id: Optional[str] = None) -> str:
     """Resolves the Meta Graph API `/messages` endpoint URL from the instantiated `settings`."""
+    version = _get_api_version()
+    phone_id = (override_phone_id or _get_configured_phone_id()).strip("/")
+
+    if override_phone_id or _resolved_phone_number_id:
+        return f"https://graph.facebook.com/{version}/{phone_id}/messages"
+
     base_url = getattr(settings, "BASE_URL", "")
-    # Guard against `Settings` being accessed as an uninstantiated class where BASE_URL is a @property
     if isinstance(base_url, property) or not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
-        version = (
-            getattr(settings, "GRAPH_API_VERSION", "")
-            or os.getenv("GRAPH_API_VERSION", "v26.0")
-        ).strip("/")
-        phone_id = (
-            getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", "")
-            or os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-        ).strip("/")
         base_url = f"https://graph.facebook.com/{version}/{phone_id}"
 
     base_url = base_url.rstrip("/")
     if base_url.endswith("/messages"):
         return base_url
     return f"{base_url}/messages"
+
+
+async def _try_resolve_waba_to_phone_id(
+    client: httpx.AsyncClient, configured_id: str, headers: Dict[str, str]
+) -> Optional[str]:
+    """If `WHATSAPP_PHONE_NUMBER_ID` was accidentally set to a WhatsApp Business Account (WABA) ID,
+    queries `GET /{WABA_ID}/phone_numbers` to auto-discover the true Phone Number ID.
+    """
+    global _resolved_phone_number_id
+    if not configured_id:
+        return None
+    version = _get_api_version()
+    lookup_url = f"https://graph.facebook.com/{version}/{configured_id}/phone_numbers"
+    try:
+        resp = await client.get(lookup_url, headers=headers)
+        if resp.status_code == 200:
+            body = resp.json()
+            numbers = body.get("data") or []
+            if numbers and numbers[0].get("id"):
+                real_id = str(numbers[0]["id"])
+                display_num = numbers[0].get("display_phone_number", "")
+                _resolved_phone_number_id = real_id
+                logger.warning(
+                    f"Configured ID '{configured_id}' is a WhatsApp Business Account (WABA) ID, "
+                    f"not a Phone Number ID. Auto-resolved to Phone Number ID '{real_id}' ({display_num}). "
+                    f"Please update WHATSAPP_PHONE_NUMBER_ID={real_id} in your .env file."
+                )
+                return real_id
+    except Exception as e:
+        logger.debug(f"WABA phone_numbers lookup failed for {configured_id}: {e}")
+    return None
 
 
 async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageResponse:
@@ -67,7 +115,8 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
     Returns:
         MessageResponse with success status and message ID.
     """
-    url = _get_messages_endpoint_url()
+    override_phone_id = payload.pop("phone_number_id", None)
+    url = _get_messages_endpoint_url(override_phone_id)
     token = (getattr(settings, "WHATSAPP_TOKEN", "") or os.getenv("WHATSAPP_TOKEN", "")).strip()
     headers = {
         "Authorization": f"Bearer {token}",
@@ -82,6 +131,27 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
             except ValueError:
                 data = {}
 
+            # If Meta returns 400 "Unsupported post request", check if WHATSAPP_PHONE_NUMBER_ID is actually a WABA ID
+            error_obj = data.get("error", {}) if isinstance(data, dict) else {}
+            error_msg = error_obj.get("message", "")
+            if (
+                response.status_code == 400
+                and "Unsupported post request" in error_msg
+                and not override_phone_id
+                and not _resolved_phone_number_id
+            ):
+                configured_id = _get_configured_phone_id()
+                real_phone_id = await _try_resolve_waba_to_phone_id(client, configured_id, headers)
+                if real_phone_id:
+                    retry_url = _get_messages_endpoint_url(real_phone_id)
+                    response = await client.post(retry_url, headers=headers, json=payload)
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        data = {}
+                    error_obj = data.get("error", {}) if isinstance(data, dict) else {}
+                    error_msg = error_obj.get("message", "")
+
             if response.status_code in (200, 201):
                 # Read receipts (`status: "read"`) return `{"success": true}` without a `messages` list
                 if payload.get("status") == "read":
@@ -94,9 +164,8 @@ async def _send_whatsapp_message(payload: Dict[str, Any]) -> models.MessageRespo
                 logger.info(f"Message sent successfully: {message_id}")
                 return models.MessageResponse(success=True, message_id=message_id)
 
-            error_obj = data.get("error", {}) if isinstance(data, dict) else {}
             error_msg = (
-                error_obj.get("message")
+                error_msg
                 or error_obj.get("error_user_msg")
                 or f"HTTP {response.status_code}: {response.text[:200]}"
             )
